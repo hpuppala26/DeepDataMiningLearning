@@ -360,6 +360,91 @@ def save_results(df, results_filename, results_format='csv', filename_col='filen
     else:
         df.to_csv(results_filename, index=False)
 
+# Define the GhostNet model architecture
+class GhostNetBackbone(torch.nn.Module):
+    def __init__(self):
+        super(GhostNetBackbone, self).__init__()
+        self.model = torch.hub.load('huawei-noah/ghostnet', 'ghostnet_1x', pretrained=True)
+        self.out_channels = 960  # Number of output channels for GhostNet's final feature map
+
+
+    def forward(self, x):
+        x = self.model.features(x)
+        return x
+
+
+# Function to create a Faster R-CNN model with GhostNet backbone
+def get_ghostnet_fasterrcnn(num_classes):
+    # Load the pre-trained GhostNet model and use its features
+    backbone = GhostNetBackbone()
+   
+    # Generate anchor boxes
+    anchor_generator = AnchorGenerator(
+        sizes=((32, 64, 128, 256, 512),),
+        aspect_ratios=((0.5, 1.0, 2.0),) * 5
+    )
+
+
+    # Define the ROI aligner
+    roi_pooler = torchvision.ops.MultiScaleRoIAlign(
+        featmap_names=['0'],
+        output_size=7,
+        sampling_ratio=2
+    )
+
+
+    # Assemble the Faster R-CNN model
+    model = FasterRCNN(
+        backbone,
+        num_classes=num_classes,
+        rpn_anchor_generator=anchor_generator,
+        box_roi_pool=roi_pooler
+    )
+
+
+    return model
+
+
+# Load the trained model
+num_classes = 91  # 80 COCO classes + background
+model = get_ghostnet_fasterrcnn(num_classes)
+model.load_state_dict(torch.load('ghostnet_fasterrcnn.pth'))
+model.eval()
+
+
+# Convert to ONNX
+dummy_input = torch.randn(1, 3, 224, 224, device='cuda')
+onnx_model_path = 'ghostnet_fasterrcnn.onnx'
+torch.onnx.export(model, dummy_input, onnx_model_path, verbose=True, opset_version=11)
+
+
+# Verify ONNX model
+onnx_model = onnx.load(onnx_model_path)
+onnx.checker.check_model(onnx_model)
+
+
+# Load ONNX model with ONNX Runtime
+ort_session = ort.InferenceSession(onnx_model_path)
+
+
+def to_numpy(tensor):
+    return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
+
+
+# Inference with ONNX Runtime
+outputs = ort_session.run(None, {'input': to_numpy(dummy_input)})
+
+
+# Measuring inference time
+import time
+start_time = time.time()
+for _ in range(100):
+    outputs = ort_session.run(None, {'input': to_numpy(dummy_input)})
+end_time = time.time()
+print(f"Inference time for 100 runs: {end_time - start_time:.2f} seconds")
+
+
+
 
 if __name__ == '__main__':
     main()

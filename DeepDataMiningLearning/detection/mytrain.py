@@ -310,6 +310,105 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
 
+    # Define your dataset and transformation function
+    def get_transforms(train):
+        transforms = []
+        transforms.append(T.ToTensor())
+        transforms.append(T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+        if train:
+            transforms.append(T.RandomHorizontalFlip(0.5))
+        return T.Compose(transforms)
+
+
+    # Get COCO dataset with appropriate transforms
+    def get_coco(root, image_set, transforms):
+        t = []
+        if transforms:
+            t.append(transforms)
+        dataset = CocoDetection(root=root, annFile=f'{root}/annotations/instances_{image_set}2017.json', transform=T.Compose(t))
+        return dataset
+
+
+    def collate_fn(batch):
+        return tuple(zip(*batch))
+
+
+    # Define the GhostNet model architecture
+    class GhostNetBackbone(torch.nn.Module):
+        def __init__(self):
+            super(GhostNetBackbone, self).__init__()
+            self.model = torch.hub.load('huawei-noah/ghostnet', 'ghostnet_1x', pretrained=True)
+            self.out_channels = 960  # Number of output channels for GhostNet's final feature map
+
+
+        def forward(self, x):
+            x = self.model.features(x)
+            return x
+
+
+    # Function to create a Faster R-CNN model with GhostNet backbone
+    def get_ghostnet_fasterrcnn(num_classes):
+        # Load the pre-trained GhostNet model and use its features
+        backbone = GhostNetBackbone()
+    
+        # Generate anchor boxes
+        anchor_generator = AnchorGenerator(
+            sizes=((32, 64, 128, 256, 512),),
+            aspect_ratios=((0.5, 1.0, 2.0),) * 5
+        )
+
+
+        # Define the ROI aligner
+        roi_pooler = torchvision.ops.MultiScaleRoIAlign(
+            featmap_names=['0'],
+            output_size=7,
+            sampling_ratio=2
+        )
+
+
+        # Assemble the Faster R-CNN model
+        model = FasterRCNN(
+            backbone,
+            num_classes=num_classes,
+            rpn_anchor_generator=anchor_generator,
+            box_roi_pool=roi_pooler
+        )
+
+
+        return model
+
+
+    # Load datasets and create data loaders
+    dataset = get_coco('/data/coco', 'train', get_transforms(train=True))
+    dataset_test = get_coco('/data/coco', 'val', get_transforms(train=False))
+
+
+    data_loader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=4, collate_fn=collate_fn)
+    data_loader_test = DataLoader(dataset_test, batch_size=2, shuffle=False, num_workers=4, collate_fn=collate_fn)
+
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+
+    # Initialize the model
+    num_classes = 91  # 80 COCO classes + background
+    model = get_ghostnet_fasterrcnn(num_classes)
+    model.to(device)
+
+
+    # Set up the optimizer
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+
+
+    # Training loop
+    num_epochs = 10
+    for epoch in range(num_epochs):
+        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
+        lr_scheduler.step()
+        evaluate(model, data_loader_test, device=device)
+
 def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, scaler=None):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")

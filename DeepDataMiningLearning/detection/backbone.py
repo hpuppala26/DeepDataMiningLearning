@@ -161,3 +161,47 @@ if __name__ == "__main__":
     output = model(x) 
     print([(k, v.shape) for k, v in output.items()])
     #[('0', torch.Size([1, 256, 16, 16])), ('1', torch.Size([1, 256, 8, 8])), ('2', torch.Size([1, 256, 4, 4])), ('3', torch.Size([1, 256, 2, 2])), ('pool', torch.Size([1, 256, 1, 1]))]
+
+
+def get_ghostnet_fasterrcnn(num_classes):
+    # Define the GhostNet model architecture
+    class GhostNet(torch.nn.Module):
+        def __init__(self):
+            super(GhostNet, self).__init__()
+            self.model = torch.hub.load('huawei-noah/ghostnet', 'ghostnet_1x', pretrained=True)
+            self.out_channels = 960  # Number of output channels for GhostNet's final feature map
+
+
+        def forward(self, x):
+            x = self.model.features(x)
+            return x
+
+
+    # Load the pre-trained GhostNet model and use its features
+    backbone = GhostNet()
+   
+    # Generate anchor boxes
+    anchor_generator = AnchorGenerator(
+        sizes=((32, 64, 128, 256, 512),),
+        aspect_ratios=((0.5, 1.0, 2.0),) * 5
+    )
+
+
+    # Define the ROI aligner
+    roi_pooler = torchvision.ops.MultiScaleRoIAlign(
+        featmap_names=['0'],
+        output_size=7,
+        sampling_ratio=2
+    )
+
+
+    # Assemble the Faster R-CNN model
+    model = FasterRCNN(
+        backbone,
+        num_classes=num_classes,
+        rpn_anchor_generator=anchor_generator,
+        box_roi_pool=roi_pooler
+    )
+
+
+    return model

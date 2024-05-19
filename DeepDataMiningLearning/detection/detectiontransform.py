@@ -305,6 +305,22 @@ def test_imagetransform(images, target, image_mean=[0.485, 0.456, 0.406], image_
 
     return image_list, target
 
+def get_transforms(train):
+    transforms = []
+   
+    # Convert the image to a tensor
+    transforms.append(T.ToTensor())
+   
+    # Normalize the tensor (specific mean and std values for ImageNet-pretrained models)
+    transforms.append(T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+   
+    # Apply additional transformations for training data
+    if train:
+        transforms.append(T.RandomHorizontalFlip(0.5))
+   
+    return T.Compose(transforms)
+
+
 
 if __name__ == "__main__":
     #imgpath = "../../sampledata/sjsupeople.jpg"
